@@ -69,6 +69,9 @@
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/manifold_lib.h>
 // #include <deal.II/lac/constraint_matrix.h>
+#include <deal.II/distributed/grid_refinement.h>
+#include <deal.II/distributed/tria.h>
+
 #include <deal.II/fe/fe_dgp.h>
 #include <deal.II/fe/fe_dgq.h>
 #include <deal.II/fe/fe_q.h>
@@ -77,11 +80,17 @@
 #include <deal.II/fe/mapping_q1.h>
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/affine_constraints.templates.h>
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/solution_transfer.h>
 #include <deal.II/numerics/vector_tools.h>
+
+// Trilinos Tpetra SparseMatrix and Vector
+#include <deal.II/lac/trilinos_tpetra_solver_direct.h>
+#include <deal.II/lac/trilinos_tpetra_sparse_matrix.h>
+#include <deal.II/lac/trilinos_tpetra_vector.h>
 
 // C++
 #include <fstream>
@@ -927,7 +936,6 @@ namespace FSI
     Assert(component < this->n_components,
            ExcIndexRange(component, 0, this->n_components));
 
-    const long double pi = 3.141592653589793238462643;
 
     // The maximum inflow depends on the configuration
     // for the different test cases:
@@ -949,7 +957,7 @@ namespace FSI
           {
             return ((p(0) == 0) && (p(1) <= 0.41) ?
                       -1.5 * _inflow_velocity *
-                        (1.0 - std::cos(pi / 2.0 * _time)) / 2.0 *
+                        (1.0 - std::cos(numbers::PI / 2.0 * _time)) / 2.0 *
                         (4.0 / 0.1681) *
                         (std::pow(p(1), 2) - 0.41 * std::pow(p(1), 1)) :
                       0);
@@ -1069,8 +1077,9 @@ namespace FSI
 
     // Graphical visualization of output
     void
-    output_results(const unsigned int        refinement_cycle,
-                   const BlockVector<double> solution) const;
+    output_results(
+      const unsigned int                                  refinement_cycle,
+      const LinearAlgebra::TpetraWrappers::Vector<double> solution) const;
 
 
     // Evaluation of functional values
@@ -1093,20 +1102,29 @@ namespace FSI
     void
     refine_mesh();
 
+    MPI_Comm mpi_communicator;
+
     Parameters::AllParameters parameters;
     const unsigned int        degree;
     unsigned int              no_of_refinements;
 
-    Triangulation<dim>        triangulation;
-    FESystem<dim>             fe;
-    DoFHandler<dim>           dof_handler;
-    AffineConstraints<double> constraints;
-    BlockSparsityPattern      sparsity_pattern;
-    BlockSparseMatrix<double> system_matrix;
-    BlockVector<double>       solution, newton_update, old_timestep_solution;
-    BlockVector<double>       system_rhs;
+    parallel::distributed::Triangulation<dim> triangulation;
+    FESystem<dim>                             fe;
+    DoFHandler<dim>                           dof_handler;
 
-    TimerOutput timer;
+    IndexSet locally_owned_dofs;
+    IndexSet locally_relevant_dofs;
+
+    AffineConstraints<double> constraints;
+
+    LinearAlgebra::TpetraWrappers::SparseMatrix<double> system_matrix;
+    LinearAlgebra::TpetraWrappers::Vector<double>       solution;
+    LinearAlgebra::TpetraWrappers::Vector<double>       newton_update;
+    LinearAlgebra::TpetraWrappers::Vector<double>       old_timestep_solution;
+    LinearAlgebra::TpetraWrappers::Vector<double>       system_rhs;
+
+    ConditionalOStream pcout;
+    TimerOutput        timer;
 
     // Global variables for timestepping scheme
     unsigned int timestep_number;
@@ -1139,18 +1157,23 @@ namespace FSI
   // Q_2^c for the fluid, Q_2^c for the solid, P_1^dc for the pressure.
   template <int dim>
   FSI_ALE_Problem<dim>::FSI_ALE_Problem(const std::string &input_file)
-    : parameters(input_file)
+    : mpi_communicator(MPI_COMM_WORLD)
+    , parameters(input_file)
     , degree(parameters.degree)
-    , triangulation(Triangulation<dim>::maximum_smoothing)
+    , triangulation(mpi_communicator, Triangulation<dim>::maximum_smoothing)
     , fe(FE_Q<dim>(degree - 1),
-         dim, // velocities
+         dim, /*velocities*/
          FE_Q<dim>(degree - 1),
-         dim, // displacements
+         dim, /*displacements*/
          FE_Q<dim>(degree - 1),
-         1)
-    , // pressure
-    dof_handler(triangulation)
-    , timer(std::cout, TimerOutput::summary, TimerOutput::cpu_times)
+         1 /*pressure*/)
+    , dof_handler(triangulation)
+    , pcout(std::cout,
+            (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
+    , timer(mpi_communicator,
+            pcout,
+            TimerOutput::never,
+            TimerOutput::wall_times)
   {}
 
 
@@ -1174,7 +1197,11 @@ namespace FSI
     std::ofstream out(filename);
     GridOut       grid_out;
     grid_out.write_vtu(triangulation, out);
-    std::cout << "Grid written to " << filename << std::endl << std::endl;
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if (rank == 0)
+      std::cout << "Grid written to " << filename << std::endl << std::endl;
   }
 
 
@@ -1310,84 +1337,68 @@ namespace FSI
     block_component[dim + 1]   = 1;
     block_component[dim + dim] = 2;
 
-    DoFRenumbering::component_wise(dof_handler, block_component);
+    // DoFRenumbering::component_wise(dof_handler, block_component);
+
+    // Get the working index sets:
+    // locally_owned_dofs stores a one-to-one map of all dofs, and holds
+    //                    the dofs that belong to this rank.
+    // locally_relevant_dofs contains the locally_owned_dofs and also some
+    //                    dofs that do belong to other ranks but are relevant
+    //                    for the rank.
+    locally_owned_dofs = dof_handler.locally_owned_dofs();
+    locally_relevant_dofs =
+      DoFTools::extract_locally_relevant_dofs(dof_handler);
 
     {
       constraints.clear();
+      constraints.reinit(locally_owned_dofs, locally_relevant_dofs);
       set_newton_bc();
       DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+      constraints.close();
     }
-    constraints.close();
 
-    std::vector<types::global_dof_index> dofs_per_block(3);
-    dofs_per_block =
-      DoFTools::count_dofs_per_fe_block(dof_handler, block_component);
-    const unsigned int n_v = dofs_per_block[0], n_u = dofs_per_block[1],
-                       n_p = dofs_per_block[2];
-
-    std::cout << "Elements:\t" << triangulation.n_active_cells() << std::endl
-              << "DoFs:\t\t" << dof_handler.n_dofs() << " (" << n_v << '+'
-              << n_u << '+' << n_p << ')' << std::endl;
-
-
+    pcout << "Elements:\t" << triangulation.n_active_cells() << std::endl
+          << "DoFs:\t\t" << dof_handler.n_dofs() << std::endl;
 
     {
-      BlockDynamicSparsityPattern csp(3, 3);
+      DynamicSparsityPattern dsp(locally_relevant_dofs);
 
-      csp.block(0, 0).reinit(n_v, n_v);
-      csp.block(0, 1).reinit(n_v, n_u);
-      csp.block(0, 2).reinit(n_v, n_p);
+      DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, false);
+      SparsityTools::distribute_sparsity_pattern(
+        dsp,
+        dof_handler.locally_owned_dofs(),
+        mpi_communicator,
+        locally_relevant_dofs);
 
-      csp.block(1, 0).reinit(n_u, n_v);
-      csp.block(1, 1).reinit(n_u, n_u);
-      csp.block(1, 2).reinit(n_u, n_p);
-
-      csp.block(2, 0).reinit(n_p, n_v);
-      csp.block(2, 1).reinit(n_p, n_u);
-      csp.block(2, 2).reinit(n_p, n_p);
-
-      csp.collect_sizes();
-
-
-      DoFTools::make_sparsity_pattern(dof_handler, csp, constraints, false);
-
-      sparsity_pattern.copy_from(csp);
+      system_matrix.reinit(locally_owned_dofs,
+                           locally_owned_dofs,
+                           dsp,
+                           mpi_communicator);
     }
 
-    system_matrix.reinit(sparsity_pattern);
 
     // Actual solution at time step n
-    solution.reinit(3);
-    solution.block(0).reinit(n_v);
-    solution.block(1).reinit(n_u);
-    solution.block(2).reinit(n_p);
-
-    solution.collect_sizes();
+    solution.reinit(locally_owned_dofs,
+                    locally_relevant_dofs,
+                    mpi_communicator);
 
     // Old timestep solution at time step n-1
-    old_timestep_solution.reinit(3);
-    old_timestep_solution.block(0).reinit(n_v);
-    old_timestep_solution.block(1).reinit(n_u);
-    old_timestep_solution.block(2).reinit(n_p);
-
-    old_timestep_solution.collect_sizes();
+    old_timestep_solution.reinit(locally_owned_dofs,
+                                 locally_relevant_dofs,
+                                 mpi_communicator);
 
 
     // Updates for Newton's method
-    newton_update.reinit(3);
-    newton_update.block(0).reinit(n_v);
-    newton_update.block(1).reinit(n_u);
-    newton_update.block(2).reinit(n_p);
-
-    newton_update.collect_sizes();
+    newton_update.reinit(locally_owned_dofs,
+                         locally_relevant_dofs,
+                         mpi_communicator,
+                         true);
 
     // Residual for  Newton's method
-    system_rhs.reinit(3);
-    system_rhs.block(0).reinit(n_v);
-    system_rhs.block(1).reinit(n_u);
-    system_rhs.block(2).reinit(n_p);
-
-    system_rhs.collect_sizes();
+    system_rhs.reinit(locally_owned_dofs,
+                      locally_relevant_dofs,
+                      mpi_communicator,
+                      true);
   }
 
 
@@ -1441,6 +1452,7 @@ namespace FSI
     const unsigned int n_q_points      = quadrature_formula.size();
     const unsigned int n_face_q_points = face_quadrature_formula.size();
 
+    Vector<double>     local_rhs(dofs_per_cell);
     FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
 
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
@@ -1500,7 +1512,11 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         fe_values.reinit(cell);
+        local_rhs    = 0;
         local_matrix = 0;
 
         // We need the cell diameter to control the fluid mesh motion
@@ -1843,13 +1859,6 @@ namespace FSI
                 // end face integrals do-nothing
               }
 
-
-            // This is the same as discussed in step-22:
-            cell->get_dof_indices(local_dof_indices);
-            constraints.distribute_local_to_global(local_matrix,
-                                                   local_dof_indices,
-                                                   system_matrix);
-
             // Finally, we arrive at the end for assembling the matrix
             // for the fluid equations and step to the computation of the
             // structure terms:
@@ -1955,16 +1964,21 @@ namespace FSI
                   }
                 // end n_q_points
               }
-
-
-            cell->get_dof_indices(local_dof_indices);
-            constraints.distribute_local_to_global(local_matrix,
-                                                   local_dof_indices,
-                                                   system_matrix);
             // end if (second PDE: STVK material)
           }
+
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(local_matrix,
+                                               local_rhs,
+                                               local_dof_indices,
+                                               system_matrix,
+                                               system_rhs);
+
         // end cell
       }
+
+    // system_rhs.compress(VectorOperation::add);
+    system_matrix.compress(VectorOperation::add);
   }
 
 
@@ -1978,6 +1992,10 @@ namespace FSI
   FSI_ALE_Problem<dim>::assemble_system_rhs()
   {
     TimerOutput::Scope t(timer, "Assemble Rhs.");
+    system_rhs.reinit(locally_owned_dofs,
+                      locally_relevant_dofs,
+                      mpi_communicator,
+                      true);
     system_rhs = 0;
 
     QGauss<dim>     quadrature_formula(parameters.degree + 2);
@@ -1999,7 +2017,8 @@ namespace FSI
     const unsigned int n_q_points      = quadrature_formula.size();
     const unsigned int n_face_q_points = face_quadrature_formula.size();
 
-    Vector<double> local_rhs(dofs_per_cell);
+    Vector<double>     local_rhs(dofs_per_cell);
+    FullMatrix<double> local_matrix(dofs_per_cell, dofs_per_cell);
 
     std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
@@ -2036,8 +2055,12 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         fe_values.reinit(cell);
-        local_rhs = 0;
+        local_rhs    = 0;
+        local_matrix = 0;
 
         cell_diameter = cell->diameter();
 
@@ -2372,12 +2395,6 @@ namespace FSI
                   }
               } // end face integrals do-nothing condition
 
-
-            cell->get_dof_indices(local_dof_indices);
-            constraints.distribute_local_to_global(local_rhs,
-                                                   local_dof_indices,
-                                                   system_rhs);
-
             // Finally, we arrive at the end for assembling
             // the variational formulation for the fluid part and step to
             // the assembling process of the structure terms:
@@ -2550,16 +2567,18 @@ namespace FSI
                   }
                 // end n_q_points
               }
-
-            cell->get_dof_indices(local_dof_indices);
-            constraints.distribute_local_to_global(local_rhs,
-                                                   local_dof_indices,
-                                                   system_rhs);
-
             // end if (for STVK material)
           }
 
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(local_matrix,
+                                               local_rhs,
+                                               local_dof_indices,
+                                               system_matrix,
+                                               system_rhs);
       } // end cell
+
+    system_rhs.compress(VectorOperation::add);
   }
 
 
@@ -2636,11 +2655,25 @@ namespace FSI
       boundary_values,
       component_mask);
 
-    for (typename std::map<types::global_dof_index, double>::const_iterator i =
-           boundary_values.begin();
-         i != boundary_values.end();
-         ++i)
-      solution(i->first) = i->second;
+    // The solution vector is read-only. Therefore, we need
+    // to create a vector with write access first, and
+    // cast the solution onto it.
+    LinearAlgebra::TpetraWrappers::Vector<double>
+      completely_distributed_solution(locally_owned_dofs,
+                                      locally_relevant_dofs,
+                                      mpi_communicator,
+                                      true);
+    completely_distributed_solution = solution;
+
+    for (auto &boundary_value : boundary_values)
+      completely_distributed_solution(boundary_value.first) =
+        boundary_value.second;
+
+    // Communicate the the completely_distributed_solution
+    // to the others processes. I.e. we cast the
+    // completely_distributed_solution onto the
+    // read-only solution vector
+    solution = completely_distributed_solution;
   }
 
   // This function applies boundary conditions
@@ -2708,16 +2741,21 @@ namespace FSI
   FSI_ALE_Problem<dim>::solve()
   {
     TimerOutput::Scope t(timer, "Solve linear system.");
-    Vector<double>     sol, rhs;
-    sol = newton_update;
-    rhs = system_rhs;
 
-    // SparseDirectUMFPACK A_direct;
-    // A_direct.factorize(system_matrix);
-    A_direct.vmult(sol, rhs);
-    newton_update = sol;
+    // create the solver_control object
+    SolverControl solver_control(dof_handler.n_dofs(), 1e-12);
 
-    constraints.distribute(newton_update);
+    LinearAlgebra::TpetraWrappers::SolverDirect<double>::AdditionalData
+      additional_data("UMFPACK");
+
+    LinearAlgebra::TpetraWrappers::SolverDirect<double> A_direct(
+      solver_control, additional_data);
+
+    A_direct.initialize(system_matrix);
+
+    A_direct.solve(newton_update, system_rhs);
+
+    // constraints.distribute(newton_update);
   }
 
   // This is the Newton iteration with simple linesearch backtracking
@@ -2744,6 +2782,9 @@ namespace FSI
     const double       line_search_damping      = 0.6;
     double             new_newton_residual;
 
+    LinearAlgebra::TpetraWrappers::Vector<double> linearization_point(
+      locally_owned_dofs, mpi_communicator);
+
     // Application of the initial boundary conditions to the
     // variational equations:
     set_initial_bc(time);
@@ -2755,7 +2796,7 @@ namespace FSI
 
     if (newton_residual < lower_bound_newton_residual)
       {
-        std::cout << '\t' << std::scientific << newton_residual << std::endl;
+        pcout << '\t' << std::scientific << newton_residual << std::endl;
       }
 
     while (newton_residual > lower_bound_newton_residual &&
@@ -2769,25 +2810,27 @@ namespace FSI
 
         if (newton_residual < lower_bound_newton_residual)
           {
-            std::cout << '\t' << std::scientific << newton_residual
-                      << std::endl;
+            pcout << '\t' << std::scientific << newton_residual << std::endl;
             break;
           }
 
         if (newton_residual / old_newton_residual > nonlinear_rho)
           {
             assemble_system_matrix();
+
             // Only factorize when matrix is re-built
-            A_direct.factorize(system_matrix);
+            // A_direct.factorize(system_matrix);
           }
 
         // Solve Ax = b
         solve();
 
-        line_search_step = 0;
+        linearization_point = solution;
+        line_search_step    = 0;
         for (; line_search_step < max_no_line_search_steps; ++line_search_step)
           {
-            solution += newton_update;
+            linearization_point += newton_update;
+            solution = linearization_point;
 
             assemble_system_rhs();
             new_newton_residual = system_rhs.linfty_norm();
@@ -2795,23 +2838,27 @@ namespace FSI
             if (new_newton_residual < newton_residual)
               break;
             else
-              solution -= newton_update;
+              {
+                // work arround
+                newton_update *= -1.0;
+                solution += newton_update;
+                newton_update *= -1.0;
+              }
 
             newton_update *= line_search_damping;
           }
 
         timer_newton.stop();
 
-        std::cout << std::setprecision(5) << newton_step << '\t'
-                  << std::scientific << newton_residual << '\t'
-                  << std::scientific << newton_residual / old_newton_residual
-                  << '\t';
+        pcout << std::setprecision(5) << newton_step << '\t' << std::scientific
+              << newton_residual << '\t' << std::scientific
+              << newton_residual / old_newton_residual << '\t';
         if (newton_residual / old_newton_residual > nonlinear_rho)
-          std::cout << "r" << '\t';
+          pcout << "r" << '\t';
         else
-          std::cout << " " << '\t';
-        std::cout << line_search_step << '\t' << std::scientific
-                  << timer_newton.cpu_time() << std::endl;
+          pcout << " " << '\t';
+        pcout << line_search_step << '\t' << std::scientific
+              << timer_newton.cpu_time() << std::endl;
 
 
         // Updates
@@ -2825,8 +2872,8 @@ namespace FSI
   template <int dim>
   void
   FSI_ALE_Problem<dim>::output_results(
-    const unsigned int        refinement_cycle,
-    const BlockVector<double> output_vector) const
+    const unsigned int                                  refinement_cycle,
+    const LinearAlgebra::TpetraWrappers::Vector<double> output_vector) const
   {
     std::vector<std::string> solution_names;
     solution_names.push_back("x_velo");
@@ -2856,10 +2903,10 @@ namespace FSI
 
     std::ostringstream filename;
 
-    std::cout << "------------------" << std::endl;
-    std::cout << "Write solution" << std::endl;
-    std::cout << "------------------" << std::endl;
-    std::cout << std::endl;
+    pcout << "------------------" << std::endl;
+    pcout << "Write solution" << std::endl;
+    pcout << "------------------" << std::endl;
+    pcout << std::endl;
     filename << filename_basis << Utilities::int_to_string(refinement_cycle, 5)
              << ".vtk";
 
@@ -2876,10 +2923,18 @@ namespace FSI
   FSI_ALE_Problem<dim>::compute_point_value(Point<dim>         p,
                                             const unsigned int component) const
   {
-    Vector<double> tmp_vector(dim + dim + 1);
-    VectorTools::point_value(dof_handler, solution, p, tmp_vector);
+    double value = -1e100;
 
-    return tmp_vector(component);
+    try
+      {
+        Vector<double> tmp_vector(dof_handler.get_fe().n_components());
+        VectorTools::point_value(dof_handler, solution, p, tmp_vector);
+        value = tmp_vector(component);
+      }
+    catch (typename VectorTools::ExcPointNotAvailableHere &e)
+      {}
+
+    return Utilities::MPI::max(value, mpi_communicator);
   }
 
   // Now, we arrive at the function that is responsible
@@ -2914,6 +2969,9 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         // First, we are going to compute the forces that
         // act on the cylinder. We notice that only the fluid
         // equations are defined here.
@@ -3049,10 +3107,23 @@ namespace FSI
           }
       }
 
-    std::cout << "Face drag:   " << time << "   " << drag_lift_value[0]
-              << std::endl;
-    std::cout << "Face lift:   " << time << "   " << drag_lift_value[1]
-              << std::endl;
+    // Comuicate the drag lift value between the ranks:
+    // Utilities::MPI::sum() does more communication than necessary, but as
+    // we only need it once in a while, it is enough
+    double global_face_drag =
+      Utilities::MPI::sum(drag_lift_value[0], mpi_communicator);
+    double global_face_lift =
+      Utilities::MPI::sum(drag_lift_value[1], mpi_communicator);
+
+    // 2D-1: 500; 2D-2 and 2D-3: 20 (see Schaefer/Turek 1996)
+    // if (test_case == "2D-1")
+    global_face_drag *= 500;
+    global_face_lift *= 500;
+
+    pcout << "Face drag:   "
+          << "   " << std::setprecision(16) << global_face_drag << std::endl;
+    pcout << "Face lift:   "
+          << "   " << std::setprecision(16) << global_face_lift << std::endl;
   }
 
   template <int dim>
@@ -3063,7 +3134,13 @@ namespace FSI
     double       drag_lift_constant = 1.0;
 
     double value = 0.0;
-    system_rhs   = 0;
+
+    system_rhs.reinit(locally_owned_dofs,
+                      locally_relevant_dofs,
+                      mpi_communicator,
+                      true);
+    system_rhs = 0;
+
     const QGauss<dim> quadrature_formula(3);
     FEValues<dim>     fe_values(fe,
                             quadrature_formula,
@@ -3091,6 +3168,9 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         local_rhs = 0;
 
         fe_values.reinit(cell);
@@ -3240,16 +3320,13 @@ namespace FSI
 
     value = 0.;
 
-    for (std::map<types::global_dof_index, double>::const_iterator p =
-           boundary_values.begin();
-         p != boundary_values.end();
-         p++)
-      {
-        value += p->second * system_rhs(p->first);
-      }
+    for (auto &boundary_value : boundary_values)
+      if (system_rhs.trilinos_rcp()->getMap()->isNodeGlobalElement(
+            boundary_value.first))
+        value += boundary_value.second * system_rhs(boundary_value.first);
 
-
-    global_drag_lift_value += value;
+    // Comuicate the drag lift value between the ranks:
+    global_drag_lift_value += Utilities::MPI::sum(value, mpi_communicator);
   }
 
 
@@ -3262,7 +3339,13 @@ namespace FSI
     double       drag_lift_constant = 1.0;
 
     double value = 0.0;
-    system_rhs   = 0;
+
+    system_rhs.reinit(locally_owned_dofs,
+                      locally_relevant_dofs,
+                      mpi_communicator,
+                      true);
+    system_rhs = 0;
+
     const QGauss<dim> quadrature_formula(3);
     FEValues<dim>     fe_values(fe,
                             quadrature_formula,
@@ -3290,6 +3373,9 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         local_rhs = 0;
 
         fe_values.reinit(cell);
@@ -3417,16 +3503,13 @@ namespace FSI
 
     value = 0.;
 
-    for (std::map<types::global_dof_index, double>::const_iterator p =
-           boundary_values.begin();
-         p != boundary_values.end();
-         p++)
-      {
-        value += p->second * system_rhs(p->first);
-      }
+    for (auto &boundary_value : boundary_values)
+      if (system_rhs.trilinos_rcp()->getMap()->isNodeGlobalElement(
+            boundary_value.first))
+        value += boundary_value.second * system_rhs(boundary_value.first);
 
-
-    global_drag_lift_value += value;
+    // Comuicate the drag lift value between the ranks:
+    global_drag_lift_value += Utilities::MPI::sum(value, mpi_communicator);
   }
 
 
@@ -3451,6 +3534,9 @@ namespace FSI
 
     for (const auto &cell : dof_handler.active_cell_iterators())
       {
+        if (!cell->is_locally_owned())
+          continue;
+
         fe_values.reinit(cell);
 
         fe_values.get_function_gradients(solution, old_solution_grads);
@@ -3469,7 +3555,8 @@ namespace FSI
           }
       }
 
-    std::cout << "Min J: " << time << "   " << min_J << std::endl;
+    double global_minimal_J = Utilities::MPI::min(min_J, mpi_communicator);
+    pcout << "Min J: " << time << "   " << global_minimal_J << std::endl;
   }
 
 
@@ -3484,10 +3571,10 @@ namespace FSI
     x1 = compute_point_value(Point<dim>(0.6, 0.2), dim);
     y1 = compute_point_value(Point<dim>(0.6, 0.2), dim + 1);
 
-    std::cout << "------------------" << std::endl;
-    std::cout << "DisX: " << time << "   " << x1 << std::endl;
-    std::cout << "DisY: " << time << "   " << y1 << std::endl;
-    std::cout << "------------------" << std::endl;
+    pcout << "------------------" << std::endl;
+    pcout << "DisX: " << time << "   " << x1 << std::endl;
+    pcout << "DisY: " << time << "   " << y1 << std::endl;
+    pcout << "------------------" << std::endl;
 
     // Compute drag and lift via line integral
     compute_drag_lift_fsi_fluid_tensor();
@@ -3496,13 +3583,13 @@ namespace FSI
     global_drag_lift_value = 0.0;
     compute_drag_lift_fsi_fluid_tensor_domain();
     compute_drag_lift_fsi_fluid_tensor_domain_structure();
-    std::cout << "Domain drag: " << time << "   " << global_drag_lift_value
-              << std::endl;
+    pcout << "Domain drag: " << time << "   " << global_drag_lift_value
+          << std::endl;
 
-    std::cout << "------------------" << std::endl;
+    pcout << "------------------" << std::endl;
     compute_minimal_J();
 
-    std::cout << std::endl;
+    pcout << std::endl;
   }
 
 
@@ -3518,10 +3605,11 @@ namespace FSI
       }
 
 
-    BlockVector<double> tmp_solution;
+    LinearAlgebra::TpetraWrappers::Vector<double> tmp_solution;
     tmp_solution = solution;
 
-    SolutionTransfer<dim, BlockVector<double>> solution_transfer(dof_handler);
+    SolutionTransfer<dim, LinearAlgebra::TpetraWrappers::Vector<double>>
+      solution_transfer(dof_handler);
 
     triangulation.prepare_coarsening_and_refinement();
     solution_transfer.prepare_for_coarsening_and_refinement(tmp_solution);
@@ -3552,18 +3640,18 @@ namespace FSI
     set_runtime_parameters();
     setup_system();
 
-    std::cout << "\n=============================="
-              << "=====================================" << std::endl;
-    std::cout << "Parameters\n"
-              << "==========\n"
-              << "Density fluid:     " << density_fluid << "\n"
-              << "Viscosity fluid:   " << viscosity << "\n"
-              << "Density structure: " << density_structure << "\n"
-              << "Lame coeff. mu:    " << lame_coefficient_mu << "\n"
-              << "Poisson ratio:     " << poisson_ratio_nu << "\n"
-              << "alpha_u:           " << alpha_u << "\n"
+    pcout << "\n=============================="
+          << "=====================================" << std::endl;
+    pcout << "Parameters\n"
+          << "==========\n"
+          << "Density fluid:     " << density_fluid << "\n"
+          << "Viscosity fluid:   " << viscosity << "\n"
+          << "Density structure: " << density_structure << "\n"
+          << "Lame coeff. mu:    " << lame_coefficient_mu << "\n"
+          << "Poisson ratio:     " << poisson_ratio_nu << "\n"
+          << "alpha_u:           " << alpha_u << "\n"
 
-              << std::endl;
+          << std::endl;
 
 
     const unsigned int output_skip = 1;
@@ -3579,13 +3667,12 @@ namespace FSI
 
     do
       {
-        std::cout << "Timestep " << timestep_number << " ("
-                  << time_stepping_scheme << ")"
-                  << ": " << time << " (" << timestep << ")"
-                  << "\n=============================="
-                  << "=====================================" << std::endl;
-
-        std::cout << std::endl;
+        pcout << "Timestep " << timestep_number << " (" << time_stepping_scheme
+              << ")"
+              << ": " << time << " (" << timestep << ")"
+              << "\n=============================="
+              << "=====================================" << std::endl;
+        pcout << std::endl;
 
         // Compute next time step
         old_timestep_solution = solution;
@@ -3593,7 +3680,7 @@ namespace FSI
         time += timestep;
 
         // Compute functional values: dx, dy, drag, lift
-        std::cout << std::endl;
+        pcout << std::endl;
         compute_functional_values();
 
         // Write solutions
@@ -3605,8 +3692,8 @@ namespace FSI
                                 timestep_number == refine_mesh_2nd ||
                                 timestep_number == refine_mesh_3rd))
           {
-            std::cout << "Refinement cycle " << refinement_cycle
-                      << "\n================== " << std::endl;
+            pcout << "Refinement cycle " << refinement_cycle
+                  << "\n================== " << std::endl;
 
             refine_mesh();
             ++refinement_cycle;
@@ -3615,6 +3702,8 @@ namespace FSI
         ++timestep_number;
       }
     while (timestep_number <= max_no_timesteps);
+
+    timer.print_summary();
   }
 
 } // namespace FSI
@@ -3622,10 +3711,14 @@ namespace FSI
 // The main function looks almost the same
 // as in all other deal.II tuturial steps.
 int
-main()
+main(int argc, char *argv[])
 {
   try
     {
+      dealii::Utilities::MPI::MPI_InitFinalize mpi_initialization(argc,
+                                                                  argv,
+                                                                  1);
+
       dealii::deallog.depth_console(0);
       const unsigned int        dim = 2;
       FSI::FSI_ALE_Problem<dim> flow_problem("step-fsi.prm");
