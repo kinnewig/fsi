@@ -10,6 +10,9 @@ subsection Global
 
   # uniform mesh refinement
   set no_of_refinements = 1
+
+  # overlap
+  set overlap = 8
 end
 
 subsection inflow_velocity_parameter
@@ -50,5 +53,5 @@ subsection Timestepping schemes & timestep & max_no_timesteps
   # FSI 1: 25 , T= 25   (timestep == 1.0);
   # FSI 2: 1500, T= 15  (timestep == 1.0e-2);
   # FSI 3: 10000, T= 10 (timestep == 1.0e-3)
-  set max_no_timesteps = 25
+  set max_no_timesteps = 5
 end

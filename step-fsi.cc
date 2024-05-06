@@ -87,14 +87,122 @@
 #include <deal.II/numerics/solution_transfer.h>
 #include <deal.II/numerics/vector_tools.h>
 
+// Belos
+#include <BelosLinearProblem.hpp>
+#include <BelosSolverFactory.hpp>
+#include <BelosTpetraAdapter.hpp>
+
+// Teuchos
+#include <Teuchos_Array.hpp>
+#include <Teuchos_CommandLineProcessor.hpp>
+#include <Teuchos_RCP.hpp>
+#include <Teuchos_ScalarTraits.hpp>
+#include <Teuchos_StackedTimer.hpp>
+#include <Teuchos_Tuple.hpp>
+
+// Thyra
+#include <Thyra_LinearOpWithSolveBase.hpp>
+#include <Thyra_LinearOpWithSolveFactoryHelpers.hpp>
+#include <Thyra_SolveSupportTypes.hpp>
+#include <Thyra_TpetraLinearOp.hpp>
+#include <Thyra_TpetraMultiVector.hpp>
+#include <Thyra_TpetraThyraWrappers.hpp>
+#include <Thyra_TpetraVector.hpp>
+#include <Thyra_VectorBase.hpp>
+#include <Thyra_VectorSpaceBase_decl.hpp>
+#include <Thyra_VectorSpaceBase_def.hpp>
+#include <Thyra_VectorStdOps.hpp>
+
+// Xpetra
+#include <Xpetra_CrsMatrixWrap.hpp>
+#include <Xpetra_DefaultPlatform.hpp>
+#include <Xpetra_Map.hpp>
+#include <Xpetra_Map_decl.hpp>
+#include <Xpetra_Parameters.hpp>
+
+
+// FROSch
+#include <FROSch_OneLevelPreconditioner_def.hpp>
+#include <FROSch_SchwarzPreconditioners_fwd.hpp>
+#include <FROSch_Tools_def.hpp>
+#include <ShyLU_DDFROSch_config.h>
+#include <Xpetra_TpetraMap.hpp>
+#include <Xpetra_TpetraMultiVector_decl.hpp>
+
 // Trilinos Tpetra SparseMatrix and Vector
+#include <deal.II/lac/trilinos_tpetra_solver.h>
 #include <deal.II/lac/trilinos_tpetra_solver_direct.h>
 #include <deal.II/lac/trilinos_tpetra_sparse_matrix.h>
 #include <deal.II/lac/trilinos_tpetra_vector.h>
 
+
 // C++
 #include <fstream>
 #include <sstream>
+
+#include "Xpetra_MapFactory_decl.hpp"
+
+using OneLevelPreconditionerType = FROSch::OneLevelPreconditioner<
+  double,
+  int,
+  dealii::types::signed_global_dof_index,
+  Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using TwoLevelPreconditionerType = FROSch::TwoLevelPreconditioner<
+  double,
+  int,
+  dealii::types::signed_global_dof_index,
+  Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using MultiVectorType =
+  Xpetra::MultiVector<double,
+                      int,
+                      dealii::types::signed_global_dof_index,
+                      Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using LinearOperatorType = Belos::OperatorT<MultiVectorType>;
+
+using XpetraOpType =
+  Belos::XpetraOp<double,
+                  int,
+                  dealii::types::signed_global_dof_index,
+                  Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XpetraMatrixType =
+  Xpetra::Matrix<double,
+                 int,
+                 dealii::types::signed_global_dof_index,
+                 Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XpetraCrsMatrixType =
+  Xpetra::CrsMatrix<double,
+                    int,
+                    dealii::types::signed_global_dof_index,
+                    Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XpetraTpetraCrsMatrixType =
+  Xpetra::TpetraCrsMatrix<double,
+                          int,
+                          dealii::types::signed_global_dof_index,
+                          Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XpetraCrsMatrixWrapType =
+  Xpetra::CrsMatrixWrap<double,
+                        int,
+                        dealii::types::signed_global_dof_index,
+                        Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XMapType =
+  Xpetra::Map<int,
+              dealii::types::signed_global_dof_index,
+              Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+using XTpetraMapType =
+  Xpetra::TpetraMap<int,
+                    dealii::types::signed_global_dof_index,
+                    Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>;
+
+
 
 // At the end of this top-matter, we import
 // all deal.II names into the global
@@ -667,6 +775,7 @@ namespace FSI
     {
       unsigned int degree;
       unsigned int no_of_refinements;
+      unsigned int overlap;
       static void
       declare_parameters(ParameterHandler &prm);
       void
@@ -682,6 +791,11 @@ namespace FSI
                           "1",
                           Patterns::Integer(0),
                           "no_of_refinements");
+        prm.declare_entry("overlap",
+                          "1",
+                          Patterns::Integer(0),
+                          "overlap");
+
       }
       prm.leave_subsection();
     }
@@ -693,6 +807,7 @@ namespace FSI
       {
         degree            = prm.get_integer("degree");
         no_of_refinements = prm.get_integer("no_of_refinements");
+        overlap           = prm.get_integer("overlap");
       }
       prm.leave_subsection();
     }
@@ -1145,9 +1260,12 @@ namespace FSI
 
     double force_structure_x, force_structure_y;
 
-    SparseDirectUMFPACK A_direct;
-
     double global_drag_lift_value;
+
+    // The FROSch Precondioner
+    LinearAlgebra::TpetraWrappers::XpetraOperatorWrap<double> preconditioner;
+    double iteration_average = 0;
+    int    iteration_num     = 0;
   };
 
 
@@ -1291,14 +1409,12 @@ namespace FSI
     // The geometry information is based on the
     // fluid-structure interaction benchmark problems
     // (Lit. J. Hron, S. Turek, 2006)
-    std::string grid_name;
-    grid_name = "fsi.inp";
+    std::string input_file = "fsi.msh";
 
     GridIn<dim> grid_in;
     grid_in.attach_triangulation(triangulation);
-    std::ifstream input_file(grid_name.c_str());
     Assert(dim == 2, ExcInternalError());
-    grid_in.read_ucd(input_file);
+    grid_in.read_msh(input_file);
 
     Point<dim> p(0.2, 0.2);
     // double radius = 0.05;
@@ -1324,7 +1440,12 @@ namespace FSI
     system_matrix.clear();
 
     dof_handler.distribute_dofs(fe);
-    DoFRenumbering::Cuthill_McKee(dof_handler);
+    pcout << "Dofs per vertex:" << dof_handler.get_fe().n_dofs_per_vertex()
+          << std::endl;
+    pcout << "Dofs per cell:" << dof_handler.get_fe().n_dofs_per_cell()
+          << std::endl;
+
+    // DoFRenumbering::Cuthill_McKee(dof_handler);
 
     // We are dealing with 7 components for this
     // two-dimensional fluid-structure interacion problem
@@ -1977,7 +2098,7 @@ namespace FSI
         // end cell
       }
 
-    // system_rhs.compress(VectorOperation::add);
+    system_rhs.compress(VectorOperation::add);
     system_matrix.compress(VectorOperation::add);
   }
 
@@ -2579,6 +2700,7 @@ namespace FSI
       } // end cell
 
     system_rhs.compress(VectorOperation::add);
+    //system_matrix.compress(VectorOperation::add);
   }
 
 
@@ -2742,18 +2864,36 @@ namespace FSI
   {
     TimerOutput::Scope t(timer, "Solve linear system.");
 
-    // create the solver_control object
+    // Direct Solver:
+    //// create the solver_control object
+    // SolverControl solver_control(dof_handler.n_dofs(), 1e-12);
+
+    // LinearAlgebra::TpetraWrappers::SolverDirect<double>::AdditionalData
+    //   additional_data("UMFPACK");
+
+    // LinearAlgebra::TpetraWrappers::SolverDirect<double> A_direct(
+    //   solver_control, additional_data);
+
+    // A_direct.initialize(system_matrix);
+
+    // A_direct.solve(newton_update, system_rhs);
+
+
+    // Iterative Solver
+    Teuchos::RCP<Teuchos::ParameterList> parameter_list =
+      Teuchos::parameterList();
+
     SolverControl solver_control(dof_handler.n_dofs(), 1e-12);
+    LinearAlgebra::TpetraWrappers::
+      SolverXpetra<double, Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>
+        solver(solver_control, parameter_list);
 
-    LinearAlgebra::TpetraWrappers::SolverDirect<double>::AdditionalData
-      additional_data("UMFPACK");
+    solver.solve(system_matrix, newton_update, system_rhs, preconditioner);
 
-    LinearAlgebra::TpetraWrappers::SolverDirect<double> A_direct(
-      solver_control, additional_data);
+    pcout << "Number iterations: " << solver.num_iterations << std::endl;
 
-    A_direct.initialize(system_matrix);
-
-    A_direct.solve(newton_update, system_rhs);
+    iteration_average += solver.num_iterations;
+    iteration_num++;
 
     // constraints.distribute(newton_update);
   }
@@ -2814,36 +2954,131 @@ namespace FSI
             break;
           }
 
-        if (newton_residual / old_newton_residual > nonlinear_rho)
+        //if (newton_residual / old_newton_residual > nonlinear_rho)
+        if (true)
           {
             assemble_system_matrix();
 
             // Only factorize when matrix is re-built
-            // A_direct.factorize(system_matrix);
+            Teuchos::RCP<Teuchos::ParameterList> parameter_list =
+              FROSch::getParametersFromXmlFile("step-fsi.xml");
+
+            // create a Xpetra::CrsMatrix Object,
+            // which is used to create the Xpetra::Matrix
+            Teuchos::RCP<XpetraCrsMatrixType> xpetra_crs_system_matrix =
+              Teuchos::rcp(new XpetraTpetraCrsMatrixType(
+                Teuchos::rcp_const_cast<Tpetra::CrsMatrix<
+                  double,
+                  int,
+                  types::signed_global_dof_index,
+                  Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>>(
+                  system_matrix.trilinos_rcp())));
+
+            // Create from the above defined Xpetra::CrsMatrix
+            // an Xpetra::Matrix
+            Teuchos::RCP<XpetraMatrixType> xpetra_system_matrix = Teuchos::rcp(
+              new XpetraCrsMatrixWrapType(xpetra_crs_system_matrix));
+
+            // The one-level Schwarz preconditioner object
+            // Teuchos::RCP<OneLevelPreconditionerType> prec(
+            //  new OneLevelPreconditionerType(xpetra_system_matrix,
+            //  parameter_list));
+
+            // The two-level Schwarz preconditioner object
+            Teuchos::RCP<TwoLevelPreconditionerType> prec(
+              new TwoLevelPreconditionerType(
+                xpetra_system_matrix,
+                Teuchos::sublist(parameter_list, "Preconditioner List")));
+
+            // Repeated Map
+            Teuchos::RCP<XMapType> uniqueMap = Teuchos::rcp(new XTpetraMapType(
+              dof_handler.locally_owned_dofs().make_tpetra_map_rcp(
+                mpi_communicator, true)));
+
+             const unsigned int dofs_per_cell =
+               dof_handler.get_fe().n_dofs_per_cell();
+             const unsigned int n_locally_owned_cells =
+               triangulation.n_locally_owned_active_cells();
+
+             Teuchos::Array<long long> cell_dofs(n_locally_owned_cells *
+                                                 dofs_per_cell);
+             std::vector<types::global_dof_index> local_dof_indices(
+               dofs_per_cell);
+
+             unsigned int cell_counter = 0;
+             for (const auto &cell : dof_handler.active_cell_iterators())
+               {
+                 if (!cell->is_locally_owned())
+                   continue;
+
+                cell->get_dof_indices(local_dof_indices);
+                for (unsigned int i = 0; i < dofs_per_cell; ++i)
+                  cell_dofs[(cell_counter * dofs_per_cell) + i] =
+                    local_dof_indices[i];
+                ++cell_counter;
+              }
+
+             //FROSch::sortunique(cell_dofs);
+
+             //Teuchos::RCP<XMapType> repeatedMap = Xpetra::MapFactory<
+             //  int,
+             //  dealii::types::signed_global_dof_index,
+             //  Tpetra::KokkosClassic::DefaultNode::DefaultNodeType>::
+             //  Build(Xpetra::UseTpetra,
+             //        uniqueMap->getGlobalNumElements(),
+             //        cell_dofs,
+             //        0,
+             //        uniqueMap->getComm()
+             //        );
+
+
+            //int rank;
+            //MPI_Comm_rank(mpi_communicator, &rank);
+            //pcout << "Repeated map global size = "
+            //      << repeatedMap->getGlobalNumElements() << std::endl;
+            //std::cout << "Repeated map size (rank = " << rank
+            //          << "): local_size = "
+            //          << repeatedMap->getLocalNumElements() << std::endl;
+
+            // Initialize
+            //
+            std::cout << "Overlap: " << parameters.overlap << std::endl;
+            prec->initialize(2,
+                             5,
+                             parameters.overlap,
+                             FROSch::null,
+                             FROSch::null,
+                             FROSch::NodeWise,
+                             uniqueMap);
+
+            // THIS ACTUALLY COMPUTES THE PRECONDITIONER
+            prec->compute();
+
+            preconditioner.initialize(prec);
           }
 
         // Solve Ax = b
         solve();
 
+        // As the solution vector is read only, we need to copy
+        // the solution to a vector which only stores the locally 
+        // owned dofs, and has therefore read and write access.
         linearization_point = solution;
         line_search_step    = 0;
         for (; line_search_step < max_no_line_search_steps; ++line_search_step)
           {
             linearization_point += newton_update;
-            solution = linearization_point;
 
+            // cast back the linearization_point onto the
+            // read-only solution vector
+            solution = linearization_point;
             assemble_system_rhs();
             new_newton_residual = system_rhs.linfty_norm();
 
             if (new_newton_residual < newton_residual)
               break;
             else
-              {
-                // work arround
-                newton_update *= -1.0;
-                solution += newton_update;
-                newton_update *= -1.0;
-              }
+              linearization_point -= newton_update;
 
             newton_update *= line_search_damping;
           }
@@ -2886,8 +3121,6 @@ namespace FSI
       data_component_interpretation(
         dim + dim + 1, DataComponentInterpretation::component_is_scalar);
 
-
-
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler);
 
@@ -2907,11 +3140,11 @@ namespace FSI
     pcout << "Write solution" << std::endl;
     pcout << "------------------" << std::endl;
     pcout << std::endl;
-    filename << filename_basis << Utilities::int_to_string(refinement_cycle, 5)
-             << ".vtk";
 
-    std::ofstream output(filename.str().c_str());
-    data_out.write_vtk(output);
+    //std::ofstream output(filename.str().c_str());
+    //data_out.write_vtk(output);
+    data_out.write_vtu_with_pvtu_record(
+      "./", filename_basis, refinement_cycle, mpi_communicator, 2, 25);
   }
 
   // With help of this function, we extract
@@ -3120,10 +3353,10 @@ namespace FSI
     global_face_drag *= 500;
     global_face_lift *= 500;
 
-    pcout << "Face drag:   "
-          << "   " << std::setprecision(16) << global_face_drag << std::endl;
-    pcout << "Face lift:   "
-          << "   " << std::setprecision(16) << global_face_lift << std::endl;
+    pcout << "Face drag:   " << "   " << std::setprecision(16)
+          << global_face_drag << std::endl;
+    pcout << "Face lift:   " << "   " << std::setprecision(16)
+          << global_face_lift << std::endl;
   }
 
   template <int dim>
@@ -3668,13 +3901,12 @@ namespace FSI
     do
       {
         pcout << "Timestep " << timestep_number << " (" << time_stepping_scheme
-              << ")"
-              << ": " << time << " (" << timestep << ")"
+              << ")" << ": " << time << " (" << timestep << ")"
               << "\n=============================="
               << "=====================================" << std::endl;
         pcout << std::endl;
 
-        // Compute next time step
+        // Compute next time step 
         old_timestep_solution = solution;
         newton_iteration(time);
         time += timestep;
@@ -3704,6 +3936,9 @@ namespace FSI
     while (timestep_number <= max_no_timesteps);
 
     timer.print_summary();
+    pcout << std::endl;
+    pcout << "Average number of iterations: "
+          << iteration_average / iteration_num << std::endl;
   }
 
 } // namespace FSI
