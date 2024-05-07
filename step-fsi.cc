@@ -1133,7 +1133,7 @@ private:
 
   // Other parameters to control the fluid mesh motion 
   double cell_diameter;  
-  double alpha_u;
+  double alpha_u, alpha_press_stab;
  
   double force_structure_x, force_structure_y;
 
@@ -1156,9 +1156,9 @@ FSI_ALE_Problem<dim>::FSI_ALE_Problem (const std::string &input_file)
                 parameters(input_file), 
                 degree(parameters.degree), 
 		triangulation (Triangulation<dim>::maximum_smoothing),
-                fe (FE_Q<dim>(degree), dim,  // velocities                  
-		    FE_Q<dim>(degree), dim,  // displacements		    
-		    FE_DGP<dim>(degree-1), 1),   // pressure
+                fe (FE_Q<dim>(degree-1), dim,  // velocities                  
+		    FE_Q<dim>(degree-1), dim,  // displacements		    
+		    FE_Q<dim>(degree-1), 1),   // pressure
                 dof_handler (triangulation),
 		timer (std::cout, TimerOutput::summary, TimerOutput::cpu_times)		
 {}
@@ -1223,6 +1223,8 @@ template <int dim>
   // The higher these parameters the stiffer the fluid mesh.
   //alpha_u = 1.0e-8;
   alpha_u= parameters.alpha_u; 
+
+  alpha_press_stab = 0.02; // TODO: to be calibrated
    
 
   // Timestepping schemes
@@ -1500,6 +1502,7 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
   std::vector<Tensor<1,dim> > phi_i_v (dofs_per_cell); 
   std::vector<Tensor<2,dim> > phi_i_grads_v(dofs_per_cell);
   std::vector<double>         phi_i_p(dofs_per_cell);   
+  std::vector<Tensor<1,dim> > phi_i_grads_p (dofs_per_cell);  
   std::vector<Tensor<1,dim> > phi_i_u (dofs_per_cell); 
   std::vector<Tensor<2,dim> > phi_i_grads_u(dofs_per_cell);
 
@@ -1533,7 +1536,8 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
 		{
 		  phi_i_v[k]       = fe_values[velocities].value (k, q);
 		  phi_i_grads_v[k] = fe_values[velocities].gradient (k, q);
-		  phi_i_p[k]       = fe_values[pressure].value (k, q);			      			 
+		  phi_i_p[k]       = fe_values[pressure].value (k, q);
+		  phi_i_grads_p[k] = fe_values[pressure].gradient (k, q);					      			 
 		  phi_i_u[k]       = fe_values[displacements].value (k, q);
 		  phi_i_grads_u[k] = fe_values[displacements].gradient (k, q);
 		}
@@ -1672,6 +1676,7 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
 		      else if (comp_j == 4)
 			{
 			  local_matrix(j,i) += (incompressibility_ALE_LinAll *  phi_i_p[j] 
+						+ alpha_press_stab * cell_diameter * cell_diameter * phi_i_grads_p[i] * phi_i_grads_p[j]
 						) * fe_values.JxW(q);		
 			}
 		      // end j dofs  
@@ -1784,7 +1789,8 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
 		{
 		  phi_i_v[k]       = fe_values[velocities].value (k, q);
 		  phi_i_grads_v[k] = fe_values[velocities].gradient (k, q);
-		  phi_i_p[k]       = fe_values[pressure].value (k, q);			      			 
+		  phi_i_p[k]       = fe_values[pressure].value (k, q);	
+		  phi_i_grads_p[k] = fe_values[pressure].gradient (k, q);			      			 
 		  phi_i_u[k]       = fe_values[displacements].value (k, q);
 		  phi_i_grads_u[k] = fe_values[displacements].gradient (k, q);
 		}
@@ -1846,7 +1852,15 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
 			}
 		      else if (comp_j == 4)
 			{
-			  local_matrix(j,i) += (phi_i_p[i] * phi_i_p[j]) * fe_values.JxW(q);      
+			  // Pressue with DGP
+			  //local_matrix(j,i) += (phi_i_p[i] * phi_i_p[j]) * fe_values.JxW(q);  
+			  
+			  // Pressure with Q1
+			  // Artificial Laplace continuation of fluid pressure into the solid in order
+			  // to avoid singular system matrix. An alternative would be to use
+			  // the FE_Nothing element.
+			  local_matrix(j,i) += alpha_u * (phi_i_grads_p[i] * phi_i_grads_p[j] + phi_i_p[i] * phi_i_p[j]) * fe_values.JxW(q);   
+    
 			}
 		      // end j dofs
 		    }  
@@ -1951,7 +1965,10 @@ FSI_ALE_Problem<dim>::assemble_system_rhs ()
       if (cell->material_id() == 0)
 	{
 	  for (unsigned int q=0; q<n_q_points; ++q)
-	    {	      
+	    {	
+	      const Tensor<1,dim> grad_p = ALE_Transformations
+		::get_grad_p<dim> (q, old_solution_grads);
+      
 	      const Tensor<2,dim> pI = ALE_Transformations
 		::get_pI<dim> (q, old_solution_values);
 	      
@@ -2102,7 +2119,10 @@ FSI_ALE_Problem<dim>::assemble_system_rhs ()
 		  else if (comp_i == 4)
 		    {
 		      const double phi_i_p = fe_values[pressure].value (i, q);
-		      local_rhs(i) -= (incompressiblity_fluid * phi_i_p) *  fe_values.JxW(q);
+		      const Tensor<1,dim> phi_i_grads_p = fe_values[pressure].gradient (i, q);
+		      
+		      local_rhs(i) -= (incompressiblity_fluid * phi_i_p
+				       + alpha_press_stab * cell_diameter * cell_diameter * grad_p * phi_i_grads_p) *  fe_values.JxW(q);
 		    }
 		  // end i dofs  
 		}  	     	   
@@ -2224,7 +2244,12 @@ FSI_ALE_Problem<dim>::assemble_system_rhs ()
       else if (cell->material_id() == 1)
 	{	  
 	  for (unsigned int q=0; q<n_q_points; ++q)
-	    {		 		 	      
+	    {	
+	      const Tensor<1,dim> grad_p = ALE_Transformations
+		::get_grad_p<dim> (q, old_solution_grads);
+
+	      const double p = old_solution_values[q](dim+dim);
+	 		 	      
 	      const Tensor<1,dim> v = ALE_Transformations
 		::get_v<dim> (q, old_solution_values);
 	      
@@ -2354,7 +2379,13 @@ FSI_ALE_Problem<dim>::assemble_system_rhs ()
 		  else if (comp_i == 4)
 		    {
 		      const double phi_i_p = fe_values[pressure].value (i, q);
-		      local_rhs(i) -= (old_solution_values[q](dim+dim) * phi_i_p) * fe_values.JxW(q);  
+		      const Tensor<1,dim> phi_i_grads_p = fe_values[pressure].gradient (i, q);
+
+		      // Pressure with DGP
+		      //local_rhs(i) -= (old_solution_values[q](dim+dim) * phi_i_p) * fe_values.JxW(q);  
+		      // Pressure with Q1
+		      local_rhs(i) -= alpha_u * (grad_p * phi_i_grads_p + p * phi_i_p)  * fe_values.JxW(q);  
+		      
 		      
 		    }
 		  // end i	  
