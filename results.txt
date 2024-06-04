@@ -1,0 +1,13 @@
+1.) (2D:) Computed with fsi.inp:
+
+  +--------+--------------------+
+  |        | Overlap            |
+  |# ranks | 5%   | 10%  | 20%  |
+  +--------+------+------+------+
+  |2       | 16   | 13   | 11   |
+  |8       | 86   | 58   | 37   |
+  |32      | 184  | 137  | 92   |
+  |128     |      |      |      |
+  +--------+------+------+------+
+
+  Note 128 cpus not computed yet, as these results where computed on my personal computer.
