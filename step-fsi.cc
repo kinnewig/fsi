@@ -776,6 +776,8 @@ namespace FSI
       unsigned int degree;
       unsigned int no_of_refinements;
       unsigned int overlap;
+      std::string       filename;
+
       static void
       declare_parameters(ParameterHandler &prm);
       void
@@ -795,6 +797,11 @@ namespace FSI
                           "1",
                           Patterns::Integer(0),
                           "overlap");
+        prm.declare_entry("filename",
+                          "fsi.msh",
+                          Patterns::FileName(),
+                          "File name of the input triangulation (must be a gmsh file)."
+                         );
 
       }
       prm.leave_subsection();
@@ -808,6 +815,7 @@ namespace FSI
         degree            = prm.get_integer("degree");
         no_of_refinements = prm.get_integer("no_of_refinements");
         overlap           = prm.get_integer("overlap");
+        filename          = prm.get("filename");
       }
       prm.leave_subsection();
     }
@@ -1010,6 +1018,141 @@ namespace FSI
       Time::parse_parameters(prm);
     }
   } // namespace Parameters
+    
+
+
+  // A namespace to store all results:
+  namespace Results {
+    class Results 
+    {
+      public: 
+        Results();
+
+        void
+        update_timestep_size(const double timestep_size_);
+
+        void add_x1_and_y1(const double x1, const double y1);
+        void add_global_face_drag_and_lift(const double global_face_lift, const double global_face_drag);
+        void add_global_drag_lift_value(const double global_drag_lift_value);
+        void add_global_minimal_J(const double global_minimal_J);
+
+        void print();
+
+      private:
+        ConditionalOStream pcout;
+
+        // Store the number of time stpes
+        int    n_timesteps;
+
+        double timestep_size;
+
+        std::vector<double> x1_list;
+        std::vector<double> y1_list;
+        std::vector<double> global_face_drag_list;
+        std::vector<double> global_face_lift_list;
+        std::vector<double> global_drag_lift_value_list;
+        std::vector<double> global_minimal_J_list;
+    };
+
+
+
+    Results::Results() 
+      : pcout(std::cout,
+            (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0))
+      , n_timesteps(0)
+    {}
+
+
+
+    void Results::update_timestep_size(const double timestep_size_)
+    {
+      timestep_size = timestep_size_;
+    }
+
+
+
+    void Results::add_x1_and_y1(const double x1, const double y1)
+    {
+      x1_list.push_back(x1);
+      y1_list.push_back(y1);
+
+      if (n_timesteps == (x1_list.size() - 1))
+        ++n_timesteps;
+
+      if (n_timesteps != x1_list.size())
+        pcout << "The number of entries in the lists x1 and y1 do not match with the number of time steps!" << std::endl;
+    }
+
+
+
+    void Results::add_global_face_drag_and_lift(const double global_face_drag, const double global_face_lift)
+    {
+      global_face_drag_list.push_back(global_face_drag);
+      global_face_lift_list.push_back(global_face_lift);
+
+      if (n_timesteps == (global_face_drag_list.size() - 1))
+        ++n_timesteps;
+
+      if (n_timesteps != global_face_drag_list.size())
+        pcout << "The number of entries in the lists global_face_drag_list and global_face_lift_list do not match with the number of time steps!" << std::endl;
+    }
+
+
+
+    void Results::add_global_drag_lift_value(const double global_drag_lift_value)
+    {
+      global_drag_lift_value_list.push_back(global_drag_lift_value);
+
+      if (n_timesteps == (global_drag_lift_value_list.size() -1))
+        ++n_timesteps;
+
+      if (n_timesteps != global_drag_lift_value_list.size())
+        pcout << "The number of entries in the list global_drag_lift_value_list does not match with the number of time steps!"<< std::endl;
+    }
+
+
+
+    void Results::add_global_minimal_J(const double global_minimal_J)
+    {
+      global_minimal_J_list.push_back(global_minimal_J);
+
+      if (n_timesteps == (global_minimal_J_list.size() - 1))
+        ++n_timesteps;
+
+      if (n_timesteps != global_minimal_J_list.size())
+        pcout << "The number of entries in the list global_minimal_J_list does not match with the number of time steps!"<< std::endl;
+    }
+
+
+
+    void
+    Results::print()
+    {
+      pcout << std::endl;
+      pcout << "====================================================================" << std::endl;
+      pcout << "Summary of the results:" << std::endl;
+      pcout << std::left << "Step | Timestep   | x1           | y1           | global_face_drag | global_face_lift | global_drag_lift_value | global_minimal_J" << std::endl;
+      pcout << std::left << "-----+------------+--------------+--------------+------------------+------------------+------------------------+-----------------" << std::endl;
+      for (unsigned int i = 0; i < n_timesteps; ++i)
+        {
+
+          pcout << std::left 
+                << std::setw(4)  << i << " | "
+                << std::fixed 
+                << std::setprecision(4)
+                << std::setw(10) << i * timestep_size << " | "
+                << std::setprecision(10)
+                << std::setw(10) << x1_list[i] << " | "
+                << std::setw(10) << y1_list[i] << " | "
+                << std::setw(16) << global_face_drag_list[i] << " | "
+                << std::setw(16) << global_face_lift_list[i] << " | "
+                << std::setw(22) << global_drag_lift_value_list[i] << " | "
+                << std::setw(16) << global_minimal_J_list[i] << std::endl;
+        }
+      pcout << std::left << "-----+------------+--------------+--------------+------------------+------------------+------------------------+-----------------" << std::endl;
+      pcout << std::endl;
+    }
+  }
 
 
   // In this class, we define a function
@@ -1262,6 +1405,9 @@ namespace FSI
 
     double global_drag_lift_value;
 
+    // Store the results
+    Results::Results results;
+
     // The FROSch Precondioner
     LinearAlgebra::TpetraWrappers::XpetraOperatorWrap<double> preconditioner;
     double iteration_average = 0;
@@ -1409,7 +1555,7 @@ namespace FSI
     // The geometry information is based on the
     // fluid-structure interaction benchmark problems
     // (Lit. J. Hron, S. Turek, 2006)
-    std::string input_file = "fsi.msh";
+    std::string input_file = parameters.filename;
 
     GridIn<dim> grid_in;
     grid_in.attach_triangulation(triangulation);
@@ -1425,7 +1571,9 @@ namespace FSI
     triangulation.set_manifold(9, boundary);
 
     triangulation.refine_global(parameters.no_of_refinements);
-    print_mesh_info(triangulation, "grid-1.vtu");
+    //print_mesh_info(triangulation, "grid-1.vtu");
+    
+    results.update_timestep_size(timestep);
   }
 
 
@@ -3042,7 +3190,7 @@ namespace FSI
 
             // Initialize
             //
-            std::cout << "Overlap: " << parameters.overlap << std::endl;
+            //std::cout << "Overlap: " << parameters.overlap << std::endl;
             prec->initialize(2,
                              5,
                              parameters.overlap,
@@ -3144,7 +3292,7 @@ namespace FSI
     //std::ofstream output(filename.str().c_str());
     //data_out.write_vtk(output);
     data_out.write_vtu_with_pvtu_record(
-      "./", filename_basis, refinement_cycle, mpi_communicator, 2, 25);
+      "./results", filename_basis, refinement_cycle, mpi_communicator, 2, 25);
   }
 
   // With help of this function, we extract
@@ -3352,6 +3500,8 @@ namespace FSI
     // if (test_case == "2D-1")
     global_face_drag *= 500;
     global_face_lift *= 500;
+
+    results.add_global_face_drag_and_lift(global_face_drag, global_face_lift);
 
     pcout << "Face drag:   " << "   " << std::setprecision(16)
           << global_face_drag << std::endl;
@@ -3789,6 +3939,7 @@ namespace FSI
       }
 
     double global_minimal_J = Utilities::MPI::min(min_J, mpi_communicator);
+    results.add_global_minimal_J(global_minimal_J);
     pcout << "Min J: " << time << "   " << global_minimal_J << std::endl;
   }
 
@@ -3804,6 +3955,8 @@ namespace FSI
     x1 = compute_point_value(Point<dim>(0.6, 0.2), dim);
     y1 = compute_point_value(Point<dim>(0.6, 0.2), dim + 1);
 
+    results.add_x1_and_y1(x1, y1);
+
     pcout << "------------------" << std::endl;
     pcout << "DisX: " << time << "   " << x1 << std::endl;
     pcout << "DisY: " << time << "   " << y1 << std::endl;
@@ -3816,6 +3969,7 @@ namespace FSI
     global_drag_lift_value = 0.0;
     compute_drag_lift_fsi_fluid_tensor_domain();
     compute_drag_lift_fsi_fluid_tensor_domain_structure();
+    results.add_global_drag_lift_value(global_drag_lift_value);
     pcout << "Domain drag: " << time << "   " << global_drag_lift_value
           << std::endl;
 
@@ -3938,7 +4092,10 @@ namespace FSI
     timer.print_summary();
     pcout << std::endl;
     pcout << "Average number of iterations: "
+          << std::fixed 
+          << std::setprecision(6)
           << iteration_average / iteration_num << std::endl;
+    results.print();
   }
 
 } // namespace FSI

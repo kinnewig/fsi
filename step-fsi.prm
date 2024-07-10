@@ -9,10 +9,13 @@ subsection Global
   set degree = 2
 
   # uniform mesh refinement
-  set no_of_refinements = 1
+  set no_of_refinements = 0
 
   # overlap
-  set overlap = 8
+  set overlap = 1
+
+  # File name of the input triangulation (must be a gmsh file)
+  set filename = fsi.msh
 end
 
 subsection inflow_velocity_parameter
