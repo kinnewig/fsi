@@ -14,8 +14,14 @@ subsection Global
   # overlap
   set overlap = 1
 
+  # Only print the result of every output_skip'th time step
+  set output_skip = 1
+
   # File name of the input triangulation (must be a gmsh file)
   set filename = fsi.msh
+
+  # File name of the output vtu
+  set output_filename = solution_fsi_2d
 end
 
 subsection inflow_velocity_parameter
@@ -56,5 +62,5 @@ subsection Timestepping schemes & timestep & max_no_timesteps
   # FSI 1: 25 , T= 25   (timestep == 1.0);
   # FSI 2: 1500, T= 15  (timestep == 1.0e-2);
   # FSI 3: 10000, T= 10 (timestep == 1.0e-3)
-  set max_no_timesteps = 5
+  set max_no_timesteps = 25
 end

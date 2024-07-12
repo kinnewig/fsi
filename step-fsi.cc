@@ -776,7 +776,9 @@ namespace FSI
       unsigned int degree;
       unsigned int no_of_refinements;
       unsigned int overlap;
-      std::string       filename;
+      unsigned int output_skip;
+      std::string  filename;
+      std::string  output_filename;
 
       static void
       declare_parameters(ParameterHandler &prm);
@@ -797,10 +799,19 @@ namespace FSI
                           "1",
                           Patterns::Integer(0),
                           "overlap");
+        prm.declare_entry("output_skip",
+                          "1",
+                          Patterns::Integer(0),
+                          "Only print the result of every output_skip'th time step");
         prm.declare_entry("filename",
                           "fsi.msh",
                           Patterns::FileName(),
-                          "File name of the input triangulation (must be a gmsh file)."
+                          "File name of the input triangulation (must be a gmsh file)"
+                         );
+        prm.declare_entry("output_filename",
+                          "solution_fsi_2d",
+                          Patterns::FileName(),
+                          "File name of the output vtu"
                          );
 
       }
@@ -815,7 +826,9 @@ namespace FSI
         degree            = prm.get_integer("degree");
         no_of_refinements = prm.get_integer("no_of_refinements");
         overlap           = prm.get_integer("overlap");
+        output_skip       = prm.get_integer("output_skip");
         filename          = prm.get("filename");
+        output_filename   = prm.get("output_filename");
       }
       prm.leave_subsection();
     }
@@ -1029,6 +1042,9 @@ namespace FSI
         Results();
 
         void
+        update_timestep_number(const int timestep_number_, const int output_skip_);
+
+        void
         update_timestep_size(const double timestep_size_);
 
         void add_x1_and_y1(const double x1, const double y1);
@@ -1042,7 +1058,9 @@ namespace FSI
         ConditionalOStream pcout;
 
         // Store the number of time stpes
-        int    n_timesteps;
+        int n_entries;
+        int timestep_number;
+        int output_skip;
 
         double timestep_size;
 
@@ -1059,68 +1077,96 @@ namespace FSI
     Results::Results() 
       : pcout(std::cout,
             (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0))
-      , n_timesteps(0)
+      , n_entries(0)
+      , timestep_number(0)
+      , output_skip(1)
     {}
 
 
 
-    void Results::update_timestep_size(const double timestep_size_)
+    void
+    Results::update_timestep_number(const int timestep_number_, const int output_skip_)
+    {
+      timestep_number = timestep_number_;
+      output_skip     = output_skip_;
+    }
+
+
+
+    void 
+    Results::update_timestep_size(const double timestep_size_)
     {
       timestep_size = timestep_size_;
     }
 
 
 
-    void Results::add_x1_and_y1(const double x1, const double y1)
+    void 
+    Results::add_x1_and_y1(const double x1, const double y1)
     {
+      if ((timestep_number % output_skip != 0))
+        return;
+
       x1_list.push_back(x1);
       y1_list.push_back(y1);
 
-      if (n_timesteps == (x1_list.size() - 1))
-        ++n_timesteps;
+      if (n_entries == (x1_list.size() - 1))
+        ++n_entries;
 
-      if (n_timesteps != x1_list.size())
+      if (n_entries != x1_list.size())
         pcout << "The number of entries in the lists x1 and y1 do not match with the number of time steps!" << std::endl;
     }
 
 
 
-    void Results::add_global_face_drag_and_lift(const double global_face_drag, const double global_face_lift)
+    void 
+    Results::add_global_face_drag_and_lift(const double global_face_drag, const double global_face_lift)
     {
+      if ((timestep_number % output_skip != 0))
+        return;
+
       global_face_drag_list.push_back(global_face_drag);
       global_face_lift_list.push_back(global_face_lift);
 
-      if (n_timesteps == (global_face_drag_list.size() - 1))
-        ++n_timesteps;
+      if (n_entries == (global_face_drag_list.size() - 1))
+        ++n_entries;
 
-      if (n_timesteps != global_face_drag_list.size())
+      if (n_entries != global_face_drag_list.size())
         pcout << "The number of entries in the lists global_face_drag_list and global_face_lift_list do not match with the number of time steps!" << std::endl;
     }
 
 
 
-    void Results::add_global_drag_lift_value(const double global_drag_lift_value)
+    void 
+    Results::add_global_drag_lift_value(const double global_drag_lift_value)
     {
+      if ((timestep_number % output_skip != 0))
+        return;
+
       global_drag_lift_value_list.push_back(global_drag_lift_value);
 
-      if (n_timesteps == (global_drag_lift_value_list.size() -1))
-        ++n_timesteps;
+      if (n_entries == (global_drag_lift_value_list.size() -1))
+        ++n_entries;
 
-      if (n_timesteps != global_drag_lift_value_list.size())
-        pcout << "The number of entries in the list global_drag_lift_value_list does not match with the number of time steps!"<< std::endl;
+      if (n_entries != global_drag_lift_value_list.size())
+        pcout << "The number of entries in the list global_drag_lift_value_list does not match with the number of time steps!" << std::endl;
     }
 
 
 
-    void Results::add_global_minimal_J(const double global_minimal_J)
+    void 
+    Results::add_global_minimal_J(const double global_minimal_J)
     {
+      if ((timestep_number % output_skip != 0))
+        return;
+
       global_minimal_J_list.push_back(global_minimal_J);
 
-      if (n_timesteps == (global_minimal_J_list.size() - 1))
-        ++n_timesteps;
+      if (n_entries == (global_minimal_J_list.size() - 1))
+        ++n_entries;
 
-      if (n_timesteps != global_minimal_J_list.size())
-        pcout << "The number of entries in the list global_minimal_J_list does not match with the number of time steps!"<< std::endl;
+      if (n_entries != global_minimal_J_list.size())
+        pcout << "The number of entries in the list global_minimal_J_list does not match with the number of time steps!" << std::endl;
     }
 
 
@@ -1133,14 +1179,14 @@ namespace FSI
       pcout << "Summary of the results:" << std::endl;
       pcout << std::left << "Step | Timestep   | x1           | y1           | global_face_drag | global_face_lift | global_drag_lift_value | global_minimal_J" << std::endl;
       pcout << std::left << "-----+------------+--------------+--------------+------------------+------------------+------------------------+-----------------" << std::endl;
-      for (unsigned int i = 0; i < n_timesteps; ++i)
+      for (unsigned int i = 0; i < n_entries; ++i)
         {
 
           pcout << std::left 
-                << std::setw(4)  << i << " | "
+                << std::setw(4)  << i * output_skip << " | "
                 << std::fixed 
                 << std::setprecision(4)
-                << std::setw(10) << i * timestep_size << " | "
+                << std::setw(10) << i * output_skip * timestep_size << " | "
                 << std::setprecision(10)
                 << std::setw(10) << x1_list[i] << " | "
                 << std::setw(10) << y1_list[i] << " | "
@@ -1411,6 +1457,7 @@ namespace FSI
     // The FROSch Precondioner
     LinearAlgebra::TpetraWrappers::XpetraOperatorWrap<double> preconditioner;
     double iteration_average = 0;
+    double iteration_max     = 0;
     int    iteration_num     = 0;
   };
 
@@ -3040,8 +3087,13 @@ namespace FSI
 
     pcout << "Number iterations: " << solver.num_iterations << std::endl;
 
+    // store the average
     iteration_average += solver.num_iterations;
     iteration_num++;
+
+    // store the maximum
+    if (iteration_max < solver.num_iterations)
+      iteration_max = solver.num_iterations;
 
     // constraints.distribute(newton_update);
   }
@@ -3280,7 +3332,7 @@ namespace FSI
     data_out.build_patches();
 
     std::string filename_basis;
-    filename_basis = "solution_fsi_2d_";
+    filename_basis = parameters.output_filename;
 
     std::ostringstream filename;
 
@@ -3291,8 +3343,10 @@ namespace FSI
 
     //std::ofstream output(filename.str().c_str());
     //data_out.write_vtk(output);
+    unsigned int n_digits = floor(log10(parameters.max_no_timesteps) + 1);
+    unsigned int n_ranks  = Utilities::MPI::n_mpi_processes(mpi_communicator);
     data_out.write_vtu_with_pvtu_record(
-      "./results", filename_basis, refinement_cycle, mpi_communicator, 2, 25);
+      "./", filename_basis, refinement_cycle, mpi_communicator, n_digits, n_ranks);
   }
 
   // With help of this function, we extract
@@ -4041,7 +4095,7 @@ namespace FSI
           << std::endl;
 
 
-    const unsigned int output_skip = 1;
+    const unsigned int output_skip = parameters.output_skip;
 
 
     unsigned int refine_mesh_1st = 1;
@@ -4059,6 +4113,8 @@ namespace FSI
               << "\n=============================="
               << "=====================================" << std::endl;
         pcout << std::endl;
+
+        results.update_timestep_number(timestep_number, output_skip);
 
         // Compute next time step 
         old_timestep_solution = solution;
@@ -4095,6 +4151,10 @@ namespace FSI
           << std::fixed 
           << std::setprecision(6)
           << iteration_average / iteration_num << std::endl;
+    pcout << "Maximal number of iterations: "
+          << std::fixed 
+          << std::setprecision(6)
+          << iteration_max << std::endl;
     results.print();
   }
 
