@@ -949,7 +949,7 @@ namespace FSI
       {
         prm.declare_entry("time_stepping_scheme",
                           "BE",
-                          Patterns::Selection("BE|CN|CN_Shifted"),
+                          Patterns::Selection("BE|CN|CN_shifted"),
                           "stepping scheme");
 
         prm.declare_entry("timestep",
