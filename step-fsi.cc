@@ -3260,6 +3260,11 @@ namespace FSI
         // Solve Ax = b
         solve();
 
+        // Break the computation when we hit iteration count 1000!
+        // as this indicates that there is no convergence!
+        if (iteration_max == 1000)
+          break;
+
         // As the solution vector is read only, we need to copy
         // the solution to a vector which only stores the locally 
         // owned dofs, and has therefore read and write access.
@@ -4140,6 +4145,11 @@ namespace FSI
             refine_mesh();
             ++refinement_cycle;
           }
+
+          // Break the computation when we hit iteration count 1000!
+          // as this indicates that there is no convergence!
+          if (iteration_max == 1000)
+            break;
 
         ++timestep_number;
       }
