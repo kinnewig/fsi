@@ -3555,11 +3555,6 @@ namespace FSI
     double global_face_lift =
       Utilities::MPI::sum(drag_lift_value[1], mpi_communicator);
 
-    // 2D-1: 500; 2D-2 and 2D-3: 20 (see Schaefer/Turek 1996)
-    // if (test_case == "2D-1")
-    global_face_drag *= 500;
-    global_face_lift *= 500;
-
     results.add_global_face_drag_and_lift(global_face_drag, global_face_lift);
 
     pcout << "Face drag:   " << "   " << std::setprecision(16)
