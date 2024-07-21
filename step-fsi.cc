@@ -1459,6 +1459,11 @@ namespace FSI
     double iteration_average = 0;
     double iteration_max     = 0;
     int    iteration_num     = 0;
+
+    unsigned int newton_itertaion_n = 0;
+    unsigned int newton_itertaion_min = 20;
+    unsigned int newton_itertaion_max = 0;
+    double       newton_iteration_sum = 0;
   };
 
 
@@ -3106,7 +3111,6 @@ namespace FSI
   template <int dim>
   void
   FSI_ALE_Problem<dim>::newton_iteration(const double time)
-
   {
     Timer              timer_newton;
     const double       lower_bound_newton_residual = 1.0e-8;
@@ -3305,6 +3309,12 @@ namespace FSI
         timer_newton.reset();
         newton_step++;
       }
+
+      --newton_step;
+      ++newton_itertaion_n;
+      newton_iteration_sum += newton_step;
+      newton_itertaion_min = (newton_step < newton_itertaion_min) ? newton_step : newton_itertaion_min;
+      newton_itertaion_min = (newton_step > newton_itertaion_max) ? newton_step : newton_itertaion_max;
   }
 
   // This function is known from almost all other
@@ -4114,7 +4124,7 @@ namespace FSI
               << "=====================================" << std::endl;
         pcout << std::endl;
 
-        results.update_timestep_number(timestep_number, output_skip);
+        results.update_timestep_number(timestep_number, 1);
 
         // Compute next time step 
         old_timestep_solution = solution;
@@ -4160,6 +4170,17 @@ namespace FSI
           << std::fixed 
           << std::setprecision(6)
           << iteration_max << std::endl;
+    pcout << std::endl;
+    pcout << "Average number of Newton iterations: "
+          << newton_iteration_sum / newton_itertaion_n
+          << std::endl
+          << "Maximal number of Newton iterations"
+          << newton_itertaion_max
+          << std::endl
+          << "Minimal number of Newton iterations"
+          << newton_itertaion_min
+          << std::endl;
+    pcout << std::endl;
     results.print();
   }
 
