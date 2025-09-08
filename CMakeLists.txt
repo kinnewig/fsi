@@ -5,8 +5,15 @@
 # Set the name of the project and target:
 SET(TARGET "step-fsi")
 
+# Add th esource folder
+file(GLOB_RECURSE TARGET_SRC  "source/*.cc" )
+
+# Add the include folder
+include_directories(include)
+
 # Declare all source files the target consists of:
 SET(TARGET_SRC
+  ${TARGET_SRC}
   ${TARGET}.cc
   # You can specify additional files here!
   )
