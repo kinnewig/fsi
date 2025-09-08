@@ -46,7 +46,6 @@
 #include <deal.II/base/function.h>
 #include <deal.II/base/utilities.h>
 #include <deal.II/base/timer.h>
-#include <deal.II/base/parameter_handler.h>  
 
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/full_matrix.h>
@@ -90,6 +89,8 @@
 #include <deal.II/lac/trilinos_tpetra_solver_direct.h>
 #include <deal.II/lac/trilinos_tpetra_sparse_matrix.h>
 #include <deal.II/lac/trilinos_tpetra_vector.h>
+
+#include <parameter_reader.h>
 
 // C++
 #include <fstream>
@@ -697,227 +698,6 @@ namespace Structure_Terms_in_ALE
   }
   
 }
-namespace Parameters
-{
-      struct GlobalValues
-      {
-        unsigned int degree;
-	unsigned int no_of_refinements;
-        static void
-        declare_parameters(ParameterHandler &prm);
-        void 
-        parse_parameters(ParameterHandler &prm);
-      };
-      void GlobalValues::declare_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Global");
-      {
-        prm.declare_entry("degree", "1",
-                        Patterns::Integer(0),
-                        "degree" );   
-	prm.declare_entry("no_of_refinements", "1",
-                        Patterns::Integer(0),
-                        "no_of_refinements" );      
-      }
-      prm.leave_subsection();
-    }
-
-    void GlobalValues::parse_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Global");
-      {
-        degree = prm.get_integer("degree");   
-	no_of_refinements = prm.get_integer("no_of_refinements");        
-      }
-      prm.leave_subsection();
-    }
-      
-            
-      
-  struct BoundaryValue
-    {
-      double       inflow_velocity;     
-      static void
-      declare_parameters(ParameterHandler &prm);
-
-      void
-      parse_parameters(ParameterHandler &prm);
-    };
-
-    void BoundaryValue::declare_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("inflow_velocity_parameter");
-      {
-        prm.declare_entry("inflow_velocity", "0.3",
-                        Patterns::Double(0),
-                        "inlet velocity" );      
-      }
-      prm.leave_subsection();
-    }
-
-    void BoundaryValue::parse_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("inflow_velocity_parameter");
-      {
-        inflow_velocity = prm.get_double("inflow_velocity");
-        
-      }
-      prm.leave_subsection();
-    }
-
-    struct PhysicalConstants
-    {
-      double       density_fluid;  
-      double       viscosity;
-      double       density_structure;
-      double       lame_coefficient_mu;
-      double       poisson_ratio_nu;
-      double       force_structure_x;
-      double       force_structure_y;
-      double       alpha_u;
-
-      static void
-      declare_parameters(ParameterHandler &prm);
-
-      void
-      parse_parameters(ParameterHandler &prm);
-    };
-
-    void PhysicalConstants::declare_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Physical constants");
-      {
-        prm.declare_entry("density_fluid", "1.0e+3",
-                        Patterns::Double(0),
-                        "density of fluid");
-        prm.declare_entry("viscosity", "1.0e-3",
-                        Patterns::Double(0),
-                        "viscosity of fluid");						
-
-        prm.declare_entry("density_structure", "1.0e+3",
-                        Patterns::Double(0),
-                        "density of structure");
-        prm.declare_entry("lame_coefficient_mu", "0.5e+6",
-                        Patterns::Double(0),
-                        "mu");
-        prm.declare_entry("poisson_ratio_nu", "0.4",
-                        Patterns::Double(0),
-                        "nu");
-
-        prm.declare_entry("force_structure_x", "0.0",
-                        Patterns::Double(0),
-                        "fx");
-        prm.declare_entry("force_structure_y", "0.0",
-                        Patterns::Double(0),
-                        "fy");
-
-        prm.declare_entry("alpha_u", "1.0e-8",
-                        Patterns::Double(0),
-                        "alpha");                 
-      }
-      prm.leave_subsection();
-    }
-
-    void PhysicalConstants::parse_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Physical constants");
-      {
-       density_fluid         = prm.get_double("density_fluid");
-       viscosity             = prm.get_double("viscosity");
-       density_structure     = prm.get_double("density_structure"); 
-       lame_coefficient_mu   = prm.get_double("lame_coefficient_mu"); 
-       poisson_ratio_nu      = prm.get_double("poisson_ratio_nu"); 
-       force_structure_x     = prm.get_double("force_structure_x");
-       force_structure_y     = prm.get_double("force_structure_y");
-       alpha_u               = prm.get_double("alpha_u");
-        
-      }
-      prm.leave_subsection();
-    }
-
-   struct Time
-    {
-      std::string  time_stepping_scheme;
-      double       timestep; 
-      int          max_no_timesteps; 
-
-      static void
-      declare_parameters(ParameterHandler &prm);
-
-      void
-      parse_parameters(ParameterHandler &prm);
-    };
-
-    void Time::declare_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Timestepping schemes & timestep & max_no_timesteps");
-      {
-        prm.declare_entry("time_stepping_scheme", "BE",
-                        Patterns::Selection("BE|CN|CN_shifted"),
-                        "stepping scheme");
-
-        prm.declare_entry("timestep", "1.0",
-                        Patterns::Double(0),
-                        "each timestep");
-
-	      prm.declare_entry("max_no_timesteps", "25",
-                        Patterns::Integer(0),
-                        "number of timesteps");		
-
-      }
-      prm.leave_subsection();
-    }
-
-    void Time::parse_parameters(ParameterHandler &prm)
-    {
-      prm.enter_subsection("Timestepping schemes & timestep & max_no_timesteps");
-      {
-       time_stepping_scheme =prm.get("time_stepping_scheme"); 
-       timestep             =prm.get_double("timestep");
-       max_no_timesteps     =prm.get_integer("max_no_timesteps"); 
-      }
-      prm.leave_subsection();
-    }
-
-    struct AllParameters 
-    : public GlobalValues,
-      public BoundaryValue,
-      public PhysicalConstants, 
-      public Time
-    {
-      AllParameters(const std::string &input_file);
-
-      static void
-      declare_parameters(ParameterHandler &prm);
-
-      void
-      parse_parameters(ParameterHandler &prm);
-    };
-
-    AllParameters::AllParameters(const std::string &input_file)
-    {
-      ParameterHandler prm;
-      declare_parameters(prm);
-      prm.parse_input(input_file);
-      parse_parameters(prm);
-    }
-
-    void AllParameters::declare_parameters(ParameterHandler &prm)
-    {
-      GlobalValues::declare_parameters(prm);
-      BoundaryValue::declare_parameters(prm);
-      PhysicalConstants::declare_parameters(prm); 
-      Time::declare_parameters(prm);
-    }
-
-    void AllParameters::parse_parameters(ParameterHandler &prm)
-    {
-      GlobalValues::parse_parameters(prm);
-      BoundaryValue::parse_parameters(prm);
-      PhysicalConstants::parse_parameters(prm);
-      Time::parse_parameters(prm);
-    }
-}
 
  
 // In this class, we define a function
@@ -1064,7 +844,7 @@ class FSI_ALE_Problem
 {
 public:
   
-  FSI_ALE_Problem (const std::string &input_file );
+  FSI_ALE_Problem (const std::string &xml_file);
   ~FSI_ALE_Problem (); 
   void run ();
   
@@ -1112,7 +892,9 @@ private:
 
   MPI_Comm mpi_communicator;
 
-  Parameters::AllParameters parameters; 
+  // Parameter Reader 
+  ParameterReader prm;
+
   const unsigned int   degree;
   unsigned int no_of_refinements;
 
@@ -1166,11 +948,11 @@ private:
 // We are going to use the following finite element discretization: 
 // Q_2^c for the fluid, Q_2^c for the solid, P_1^dc for the pressure. 
 template <int dim>
-FSI_ALE_Problem<dim>::FSI_ALE_Problem (const std::string &input_file)
+FSI_ALE_Problem<dim>::FSI_ALE_Problem (const std::string &xml_file)
                 :
                 mpi_communicator(MPI_COMM_WORLD),
-                parameters(input_file), 
-                degree(parameters.degree), 
+                prm(xml_file), 
+                degree(prm.get_integer("Mesh and Geometry", "Polynomial degree")), 
 		triangulation (mpi_communicator, Triangulation<dim>::maximum_smoothing),
                 fe (FE_Q<dim>(degree-1), dim,  // velocities                  
 		    FE_Q<dim>(degree-1), dim,  // displacements		    
@@ -1220,8 +1002,8 @@ template <int dim>
    // density_fluid= 1.0e+3;
    // viscosity = 1.0e-3;
 
-  density_fluid = parameters.density_fluid;
-  viscosity     = parameters.viscosity;  
+  density_fluid = prm.get_double("Physical constants", "density fluid");
+  viscosity     = prm.get_double("Physical constants", "viscosity");
 
   // Structure parameters
   // FSI 1 & 3: 1.0e+3; FSI 2: 1.0e+4
@@ -1229,9 +1011,9 @@ template <int dim>
   // FSI 1 & 2: 0.5e+6; FSI 3: 2.0e+6
   // lame_coefficient_mu = 0.5e+6; 
   // poisson_ratio_nu = 0.4; 
-  density_structure     = parameters.density_structure; 
-  lame_coefficient_mu   = parameters.lame_coefficient_mu; 
-  poisson_ratio_nu      = parameters.poisson_ratio_nu; 
+  density_structure     = prm.get_double("Physical constants", "density structure");
+  lame_coefficient_mu   = prm.get_double("Physical constants", "lame coefficient mu");
+  poisson_ratio_nu      = prm.get_double("Physical constants", "poisson ratio nu");
   
   lame_coefficient_lambda =  (2 * poisson_ratio_nu * lame_coefficient_mu)/
     (1.0 - 2 * poisson_ratio_nu);
@@ -1239,30 +1021,30 @@ template <int dim>
   // Force on beam
   //force_structure_x = 0.0;
   //force_structure_y = 0.0; 
-  force_structure_x     = parameters.force_structure_x; 
-  force_structure_y     = parameters.force_structure_y; 
+  force_structure_x     = prm.get_double("Physical constants", "force structure x");
+  force_structure_y     = prm.get_double("Physical constants", "force structure y");
 
 
   // Diffusion parameters to control the fluid mesh motion
   // The higher these parameters the stiffer the fluid mesh.
   //alpha_u = 1.0e-8;
-  alpha_u= parameters.alpha_u; 
+  alpha_u = prm.get_double("Physical constants", "alpha u");
 
-  alpha_press_stab = 0.02; // TODO: to be calibrated
+  alpha_press_stab = prm.get_double("Physical constants", "alpha press stab");
    
 
   // Timestepping schemes
   //BE, CN, CN_shifted
   //time_stepping_scheme = "BE";    
-  time_stepping_scheme =parameters.time_stepping_scheme;
+  time_stepping_scheme = prm.get_string("Timestepping schemes", "time stepping scheme");
 
   // Timestep size:
   // FSI 1: 1.0 (quasi-stationary)
   // FSI 2: <= 1.0e-2 (non-stationary)
   // FSI 3: <= 1.0e-3 (non-stationary)
   //timestep = 1.0; 
-  timestep= parameters.timestep;
-  max_no_timesteps=parameters.max_no_timesteps;
+  timestep         = prm.get_double("Timestepping schemes", "timestep");
+  max_no_timesteps = prm.get_integer("Timestepping schemes", "max no timesteps");
   // Maximum number of timesteps:
   // FSI 1: 25 , T= 25   (timestep == 1.0)
   // FSI 2: 1500, T= 15  (timestep == 1.0e-2)
@@ -1296,8 +1078,7 @@ template <int dim>
   // The geometry information is based on the 
   // fluid-structure interaction benchmark problems 
   // (Lit. J. Hron, S. Turek, 2006)
-  std::string grid_name;
-  grid_name  = "fsi.inp"; 
+  std::string grid_name = prm.get_string("Mesh and Geometry", "Grid file name");
   
   GridIn<dim> grid_in;
   grid_in.attach_triangulation (triangulation);
@@ -1313,7 +1094,7 @@ template <int dim>
   triangulation.set_manifold (8, boundary);
   triangulation.set_manifold (9, boundary);
     
-  triangulation.refine_global (parameters.no_of_refinements);
+  triangulation.refine_global(prm.get_integer("Mesh and Geometry", "Number of refinements"));
   print_mesh_info(triangulation, "grid-1.vtu");
 }
 
@@ -1439,8 +1220,8 @@ void FSI_ALE_Problem<dim>::assemble_system_matrix ()
   TimerOutput::Scope t(timer, "Assemble Matrix.");
   system_matrix=0;
      
-  QGauss<dim>   quadrature_formula(parameters.degree+2);  
-  QGauss<dim-1> face_quadrature_formula(parameters.degree+2);
+  QGauss<dim>   quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);  
+  QGauss<dim-1> face_quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);
 
   FEValues<dim> fe_values (fe, quadrature_formula,
                            update_values    |
@@ -1905,8 +1686,8 @@ FSI_ALE_Problem<dim>::assemble_system_rhs ()
                     true);
   system_rhs=0;
   
-  QGauss<dim>   quadrature_formula(parameters.degree+2);
-  QGauss<dim-1> face_quadrature_formula(parameters.degree+2);
+  QGauss<dim>   quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);
+  QGauss<dim-1> face_quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);
 
   FEValues<dim> fe_values (fe, quadrature_formula,
                            update_values    |
@@ -2439,7 +2220,7 @@ void
 FSI_ALE_Problem<dim>::set_initial_bc (const double time)
 { 
 
-double inflow_velocity =parameters.inflow_velocity;
+    double inflow_velocity = prm.get_double("Physical constants", "inflow velocity");
 
     std::map<types::global_dof_index, double> boundary_values;  
     std::vector<bool> component_mask (dim+dim+1, true);
@@ -3296,7 +3077,7 @@ void FSI_ALE_Problem<dim>::compute_drag_lift_fsi_fluid_tensor_domain_structure()
 template <int dim>
 void FSI_ALE_Problem<dim>::compute_minimal_J()
 {
-  QGauss<dim>   quadrature_formula(parameters.degree+2);
+  QGauss<dim>   quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);
   FEValues<dim> fe_values (fe, quadrature_formula,
                            update_values    |
                            update_quadrature_points  |
@@ -3511,7 +3292,7 @@ int main (int argc, char *argv[])
 
       dealii::deallog.depth_console (0);
       const unsigned int dim = 2;
-	    FSI::FSI_ALE_Problem<dim> flow_problem ("step-fsi.prm");      
+	    FSI::FSI_ALE_Problem<dim> flow_problem ("step-fsi.xml");      
       flow_problem.run ();
     }
   catch (std::exception &exc)
