@@ -49,8 +49,7 @@
 
 #include <deal.II/lac/block_vector.h>
 #include <deal.II/lac/full_matrix.h>
-#include <deal.II/lac/block_sparse_matrix.h>
-#include <deal.II/lac/sparse_direct.h>
+#include <deal.II/lac/solver_gmres.h>
 
 #include <deal.II/distributed/grid_refinement.h>
 #include <deal.II/distributed/tria.h>
@@ -89,6 +88,7 @@
 #include <deal.II/lac/trilinos_tpetra_solver_direct.h>
 #include <deal.II/lac/trilinos_tpetra_sparse_matrix.h>
 #include <deal.II/lac/trilinos_tpetra_vector.h>
+#include <deal.II/lac/trilinos_tpetra_precondition.h>
 
 #include <parameter_reader.h>
 
@@ -934,8 +934,6 @@ private:
  
   double force_structure_x, force_structure_y;
 
-  SparseDirectUMFPACK A_direct;
-  
   double global_drag_lift_value;
   
   
@@ -2354,17 +2352,21 @@ FSI_ALE_Problem<dim>::solve ()
 
   // create the solver_control object
   SolverControl solver_control(dof_handler.n_dofs(), 1e-12);
+  SolverGMRES<LinearAlgebra::TpetraWrappers::Vector<double, MemorySpace::Host>> solver(solver_control);
 
-  // create the solver:
-  LinearAlgebra::TpetraWrappers::SolverDirect<double>::AdditionalData
-    additional_data("UMFPACK");
-  LinearAlgebra::TpetraWrappers::SolverDirect<double> A_direct(
-    solver_control, additional_data);
-
-  A_direct.initialize(system_matrix);
+  // create the preconditioner object
+  system_matrix.compress(VectorOperation::add);
+  LinearAlgebra::TpetraWrappers::PreconditionFROSch<double> preconditioner("one_level");
+  Teuchos::RCP<Teuchos::ParameterList> prm_preconditioner_list = Teuchos::sublist(prm.get_parameter_list(), "Preconditioner List");
+  preconditioner.initialize(system_matrix, prm_preconditioner_list);
 
   // Solve
-  A_direct.solve(newton_update, system_rhs);
+  solver.solve(system_matrix,
+               newton_update,
+               system_rhs,
+               preconditioner);
+
+  pcout << "Solved in " << solver_control.last_step() << std::endl;
 
   // distribute the solution vector
   newton_update.compress(VectorOperation::add);
