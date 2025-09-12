@@ -168,17 +168,6 @@ public:
   LinearAlgebra::TpetraWrappers::Vector<Number, MemorySpace> &global_solution,
   LinearAlgebra::TpetraWrappers::Vector<Number, MemorySpace> &local_subdomain_vector);
 
-
-  /*
-   * @brief Distribute a global matrix and create local matrices on each overlapping subdomain.
-   * (Help function to test the implementation)
-   */
-  void
-  distribute_matrix (
-    LinearAlgebra::TpetraWrappers::SparseMatrix<Number, MemorySpace> &global_matrix,
-    LinearAlgebra::TpetraWrappers::SparseMatrix<Number, MemorySpace> &local_subdomain_matrix
-    );
-
   /*
    * @brief Computes the Preconditioner
    *
