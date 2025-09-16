@@ -3407,6 +3407,8 @@ void FSI_ALE_Problem<dim>::assemble_local_system_matrix ()
      
   QGauss<dim>   quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);  
   QGauss<dim-1> face_quadrature_formula(prm.get_integer("Mesh and Geometry", "Polynomial degree") + 2);
+  local_neumann_matrix = 0;
+  local_robin_matrix   = 0;
 
   FEValues<dim> fe_values (fe, quadrature_formula,
                            update_values    |
@@ -3426,6 +3428,7 @@ void FSI_ALE_Problem<dim>::assemble_local_system_matrix ()
 
   Vector<double>     local_rhs(dofs_per_cell);
   FullMatrix<double>   local_matrix (dofs_per_cell, dofs_per_cell);
+  FullMatrix<double>   cell_robin_matrix (dofs_per_cell, dofs_per_cell);
 
   std::vector<types::global_dof_index> local_dof_indices (dofs_per_cell); 
 		
@@ -3488,8 +3491,9 @@ void FSI_ALE_Problem<dim>::assemble_local_system_matrix ()
         continue;
 
       fe_values.reinit (cell);
-      local_matrix = 0;
-      local_rhs    = 0;
+      local_matrix      = 0;
+      cell_robin_matrix = 0;
+      local_rhs         = 0;
       
       // We need the cell diameter to control the fluid mesh motion
       cell_diameter = cell->diameter();
@@ -3731,7 +3735,7 @@ void FSI_ALE_Problem<dim>::assemble_local_system_matrix ()
 			      const unsigned int comp_j = fe.system_to_component_index(j).first; 
 			      if (comp_j == 0 || comp_j == 1)
 				{
-				  local_matrix(j,i) -= 1.0 * (timestep * theta *
+				  cell_robin_matrix(j,i) -= 1.0 * (timestep * theta *
 							neumann_value * phi_i_v[j] 
 							) * fe_face_values.JxW(q);
 				}
@@ -3847,6 +3851,12 @@ void FSI_ALE_Problem<dim>::assemble_local_system_matrix ()
                                                 local_dof_indices,
                                                 local_neumann_matrix,
                                                 local_system_rhs);
+    local_constraints.distribute_local_to_global(cell_robin_matrix,
+                                                local_rhs,
+                                                local_dof_indices,
+                                                local_robin_matrix,
+                                                local_system_rhs);
+
       // end cell
     }   
 
