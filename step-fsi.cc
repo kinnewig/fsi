@@ -2403,7 +2403,9 @@ void FSI_ALE_Problem<dim>::newton_iteration (const double time)
 	  break;
 	}
   
-      if (newton_residual/old_newton_residual > nonlinear_rho)
+      // We have to recompute the preconditioner every time; otherwise, we do not get any convergence.
+      //if (newton_residual/old_newton_residual > nonlinear_rho)
+      if (true)
 	{
 	  assemble_system_matrix ();
 	}	
