@@ -2325,9 +2325,14 @@ FSI_ALE_Problem<dim>::solve ()
 
   // create the preconditioner object
   system_matrix.compress(VectorOperation::add);
-  LinearAlgebra::TpetraWrappers::PreconditionFROSch<double> preconditioner("one_level");
+  LinearAlgebra::TpetraWrappers::PreconditionFROSch<double> preconditioner(LinearAlgebra::TpetraWrappers::PreconditionFROSch<double>::OneLevel);
+
+  // read the parameter from the Teuchos::ParameterList
   Teuchos::RCP<Teuchos::ParameterList> prm_preconditioner_list = Teuchos::sublist(prm.get_parameter_list(), "Preconditioner List");
-  preconditioner.initialize(system_matrix, prm_preconditioner_list);
+  preconditioner.set_parameter_list(*prm_preconditioner_list);
+
+  // compute the preconditioner
+  preconditioner.initialize(system_matrix);
 
   // Solve
   solver.solve(system_matrix,
